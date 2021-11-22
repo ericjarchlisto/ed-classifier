@@ -1,3 +1,4 @@
+from functools import _Descriptor
 import json
 import logging
 import math
@@ -34,7 +35,6 @@ DATASET_PATH = './data/data-sample-invoices.csv'
 @dataclass
 class InvoiceRecordForClassification:
     counterparty_name: str
-    counterparty_alias: str
     counterparty_rfc: str
     descriptions: str
     # no 'text', no 'prepayment as inputs anymore
@@ -46,8 +46,7 @@ class InvoiceRecord(InvoiceRecordForClassification):
 
 
 class PartSelector(BaseEstimator, TransformerMixin):
-    """Extract and transform text from each document for Vectorizing
-    
+    """Clean and transform text from each document for Vectorizing
         implements fit() and transform() according to sklearn API conventions
     """
     def __init__(self, part):
@@ -57,10 +56,30 @@ class PartSelector(BaseEstimator, TransformerMixin):
         # no fitting required
         return self
 
+    def _convertAccented(text, pattobj):
+            '''
+            Restore characters from lowercase text, like "&oacute;" into "ó"
+            '''
+            accented = {
+                'a':'á',
+                'e':'é',
+                'i':'í',
+                'o': 'ó',
+                'u':'ú'
+            }
+            
+            def accentRepl(matchobj):
+                letter = matchobj.group(1)
+                return accented[letter]
+            
+            return pattobj.sub(accentRepl, text)
+
     def transform(self, invoices: List[InvoiceRecordForClassification]):
         # For every invoice's text features convert into vectorizable plain text
         # This is the 1st step in the vectorizer pipeline. 2nd is Hashingvectorizer
-        
+        patt = r'&([aeiou])acute;'  # vowel is captured by group 1
+        accent_rgx = re.compile(patt)      # compiled beforehand for performance
+
         def f(i: InvoiceRecordForClassification) -> str:
             if self.part == 'lineitems':
                 # Part of the workflow could be when lineitems are being filled
@@ -71,6 +90,9 @@ class PartSelector(BaseEstimator, TransformerMixin):
                     i.counterparty_name or '',
                     i.counterparty_rfc or ''
                 ]).replace('\n', ' ') + (i.descriptions or '').replace('\n', ' ')
+                
+                # should we lowercase it all?
+                all_text = self._convertAccented(all_text.lower(), accent_rgx)
 
                 if self.part.startswith('extract_regex:'):
                     # Customer workflow may require to predict based on specific words from text
@@ -92,6 +114,9 @@ class ExtraDataClassifierSimple(object):
     Customer-agnostic classifier, don't care about workflows or parts; 
     we only receive the data and predict for two fields: nature and cost center.
     we do not use 'text' as input anymore.
+    we do not use timestamp from invoices
+
+    A classifier instance is created on a per-workflow basis (?)
     '''
 
     clfs: Dict[str, SGDClassifier]  # field name -> sklearn SVM Classifier
@@ -101,17 +126,38 @@ class ExtraDataClassifierSimple(object):
 
     def __init__(self, clf_factory=None, part='all'):
             self.df = pd.read_csv(DATASET_PATH, index_col=0)
+            self.prepareDataFrame()
 
-            self.fields = ['cost_center', 'nature']
-            self.targets = {field: [] for field in self.fields}
-            self.vectorizers = {field: None for field in self.fields}
-            self.data_vectorized = {field: None for field in self.fields}
+            self.fields = ['nature', 'cost_center']  # targets
+            self.targets = {field: [] for field in self.fields}  # field name -> labels values array
+            self.vectorizers = {field: None for field in self.fields}  # field name -> sklearn vectorizer v(invoices_with_field) 
+            self.data_vectorized = {field: None for field in self.fields}  # field name -> output of vectorizers[field]
             self.last_modified_on = 0
-            self.part = part  # i thought part was field-unique
-            self.logger = logging.getLogger(f'{__package__}.{__name__}.{customer.id}.{workflow_name}')
+            self.part = part  
+            self.logger = logging.getLogger(f'{__package__}.{__name__}.simple-classif')
             self.is_viable = False   # huh?
-            self.clfs = {}
+            self.clfs = {}  # field name -> sklearn classifier: f(invoices, target_labels_array)
             self.update() # the very first train
+
+    def prepareDataFrame(self):
+        '''Standardize dataframe columns for Data extraction'''
+        if 'nature' in self.df:
+            self.df['nature'] = self.df['nature'].astype('Int64')
+            self.df['nature'] = self.df['nature'].astype('category')
+        else: 
+            self.logger.warning("INIT \tno `nature` in dataframe")
+        if 'cost_center' in self.df:
+            self.df['cost_center'] = self.df['cost_center'].astype('Int64')
+            self.df['cost_center'] = self.df['cost_center'].astype('category')
+        else: 
+            self.logger.warning("INIT \tno `cost_center` in dataframe")
+        
+        if 'text' in self.df:
+            # remove the overall null column of `text`
+            self.df.drop('text', inplace=True, axis=1)
+        
+        self.logger.info("Data columns preparation finished")
+
 
     def create_sdg_classifier(self):
         # no customization YET
@@ -119,38 +165,143 @@ class ExtraDataClassifierSimple(object):
     
 
     def get_classes(self, field:str) -> Set[str]:
+        '''Return set of unique values for the specified column in df'''
         if field in self.df:
             return set(self.df[field].unique())
 
         return set()
 
+    def _process_hit(self, r: Any) -> Optional[InvoiceRecord]:
+        '''Receive a dataframe row, return an InvoiceRecord'''
+        # If we used timestamp, we would update self.last_modified here
+        
+        def _get_value(r: Dict[str, Any], field: str) -> Optional[Any]:
+            '''Return specified value from row if not empty'''
+
+            value = r[field]
+            
+            if isinstance(value, str) and value.strip() != '':
+                return value
+            # Values could be NaN objects 
+            return None
+
+        values = {}  # dictionary of target field:value
+        
+        for field in self.fields: # target fields
+            value = _get_value(r, field)
+            if value is not None:
+                values[field] = value
+        
+        # descriptions may be NaN object. If so, convert to empty str
+        descriptions = _get_value(r, 'descriptions') or ''
+
+        # return InvoiceRecord if there is at least 1 target field
+        if values:  
+            return InvoiceRecord(
+                id=r['id'],
+                values=values,  # target values of this invoice
+                descriptions=descriptions,
+                counterparty_name=r['counterparty_name'],
+                counterparty_rfc=r['counterparty_rfc'],
+            )
+
+        else:
+            # this invoice is not useful for training
+            return None
+
+    def _add_descriptions(self, chunk: Dict[int, InvoiceRecord]) -> None:
+            # In production we would query the descriptions from associated LineItem objects
+            # But our data already holds this information in values['descriptions] if it was not NaN
+            pass
+           
+    def _vectorize(self, invoices: List[InvoiceRecord]) -> None:
+            # Predictor is an SVM trained on Hashing counts sparse matrix.
+ 
+            for field in self.fields:
+                if not self.vectorizers[field]:  # don't think this clause is ever true
+                    continue
+                
+                # Grab all invoices that have target value 
+                invoices_with_field = [i for i in invoices if field in i.values]
+                self.logger.info(f'Processing field {field}: {len(invoices_with_field)} invoices')
+
+                # Only store vectorized representation, otherwise memory usage grows very rapidly
+                vectorized = self.vectorizers[field].transform(invoices_with_field)  # triggers both clean and vectorize steps on IR attribute
+                
+                if self.data_vectorized[field] is not None:
+                    # append it to the already stored sparse matrix
+                    self.data_vectorized[field] = sparse.vstack([self.data_vectorized[field], vectorized])
+                else:
+                    # first time adding data for this field
+                    self.data_vectorized[field] = vectorized
+
+                self.targets[field] += [json.dumps(i.values[field]) for i in invoices_with_field]  # y values for this field's predictor
+
+            self.logger.info('%.1fMB', resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024)
+
+    def extract_data(self) -> None:
+        '''
+        Processes invoices into records, calls vectorizing function on every chunk of records 
+        which updates self.data_vectorized and self.targets.
+        It 
+        '''
+
+        def _process_chunk(c: Dict[int, InvoiceRecord]) -> None:
+            # self._add_descriptions(c)  # invoices already have not-null descriptions
+            self._vectorize(list(c.values())) # vectorize invoices list
+            c.clear()
+
+        data = self.df[['id', 'counterparty_name', 'counterparty_rfc', 'descriptions', 'nature', 'cost_center']]
+        self.logger.info('Extracting data from %s new invoices', len(data))
+
+        chunk: Dict[int, InvoiceRecord] = {}
+        for index, hit in tqdm(data.iterrows(), total=len(data)):
+            # iterate over the rows of data, named hit
+            record = self._process_hit(hit)  # returns InvoiceRecord
+            
+            if record:
+                chunk[hit['id']] = record # can it be index?
+
+            if len(chunk) >= EXTRACTION_CHUNK_SIZE:
+                _process_chunk(chunk)  # vectorize invoices so far and then clear the chunk
+
+        # Leftover results (modulus PROCESSING_CHUNK_SIZE)
+        if chunk:
+            _process_chunk(chunk)
+
 
     def update(self):
             """Process next batch of invoices (based on categorization time),
-            re-train the classifier using the whole set"""
+            re-train the classifier using the whole set
+            how often is this method called?
+
+            All fields in self.fields are predicted on the same input features defined in InvoiceRecord
+            """
 
             if not self.fields:
                 return
 
-            # 1. Determine viability of a field's classes
+            # 1. Determine target viability of a field
             for field in self.fields:
                 classes = self.get_classes(field)
                 self.logger.info('[%s] Extracted %s unique classes', field, len(classes))
                 self.logger.info('[%s] %s', field, repr(classes))
 
                 if 2 <= len(classes) <= MAX_CLASSES:
-                    self.is_viable = True
-                    part = self.workflow.fields[field]['classifier'].get('part', 'all')
+                    self.is_viable = True  # no transcendence
+                    part = 'all' # otherwise comes from worklow.fields.fieldname.classifier.part
+                    
                     self.vectorizers[field] = Pipeline([
                         ('selector', PartSelector(part)),
                         ('vectorizer',
                         HashingVectorizer(n_features=262144, ngram_range=(1, 2),
                                         binary=True, strip_accents='ascii'))
                     ])
+                    # HashVectorizer uses occurrence counts (0 or 1), and n_features = 2**18. could we tweak up to 2**20 which is default?
                 else:
                     self.logger.info('[%s] Not viable: %s classes', field, len(classes))
 
-            # 2. Extract data for viable fields
+            # 2. Extract vectorized data for the viable fields, register time taken
             start_time = time.time()
             self.extract_data()
             self.logger.info('Extracted data in %s seconds', time.time() - start_time)
@@ -159,6 +310,20 @@ class ExtraDataClassifierSimple(object):
             for field in self.fields:
                 if self.vectorizers[field]:  # is viable
                     start_time = time.time()
+                    # initialize the sdg classifier
                     self.clfs[field] = self.create_classifier()
-                    self.clfs[field].fit(self.data_vectorized[field], self.targets[field])
+                    # train the classifier for this field using stored y labels array
+                    self.clfs[field].fit(self.data_vectorized[field], self.targets[field])  
+
                     self.logger.info('[%s] Trained classifier in %s seconds', field, time.time() - start_time)
+
+            # 4. We now have classifiers trained for every field... is the target included??
+
+'''
+OBSERVATIONS WRT CURRENT IMPLEMENTATION
+
+- Data is extracted as input features to predict any other target (all vs all) under a correlation premise.
+- there is no pre-selection of inputs and targets. the data we have is the data we use.
+- thus, there is a risk that for a given target there is not enough input data, since we can't use null values
+- should there be a predefinition for targets? some mapping of f(input fields) -> (target field) instead of f(inputs except target) -> target
+'''
