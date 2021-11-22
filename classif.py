@@ -1,9 +1,8 @@
-from functools import _Descriptor
 import json
 import logging
 import math
 import re
-import resource
+#import resource # Linux specific
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -125,6 +124,7 @@ class ExtraDataClassifierSimple(object):
     last_modified_on: int  # UTC timestamp, for selecting the data to use for partial fit
 
     def __init__(self, clf_factory=None, part='all'):
+            # self.logger = logging.getLogger(f'{__package__}.{__name__}.simple-classif')
             self.df = pd.read_csv(DATASET_PATH, index_col=0)
             self.prepareDataFrame()
 
@@ -134,7 +134,6 @@ class ExtraDataClassifierSimple(object):
             self.data_vectorized = {field: None for field in self.fields}  # field name -> output of vectorizers[field]
             self.last_modified_on = 0
             self.part = part  
-            self.logger = logging.getLogger(f'{__package__}.{__name__}.simple-classif')
             self.is_viable = False   # huh?
             self.clfs = {}  # field name -> sklearn classifier: f(invoices, target_labels_array)
             self.update() # the very first train
@@ -145,18 +144,18 @@ class ExtraDataClassifierSimple(object):
             self.df['nature'] = self.df['nature'].astype('Int64')
             self.df['nature'] = self.df['nature'].astype('category')
         else: 
-            self.logger.warning("INIT \tno `nature` in dataframe")
+            # self.logger.warning("INIT \tno `nature` in dataframe")
         if 'cost_center' in self.df:
             self.df['cost_center'] = self.df['cost_center'].astype('Int64')
             self.df['cost_center'] = self.df['cost_center'].astype('category')
         else: 
-            self.logger.warning("INIT \tno `cost_center` in dataframe")
+            # self.logger.warning("INIT \tno `cost_center` in dataframe")
         
         if 'text' in self.df:
             # remove the overall null column of `text`
             self.df.drop('text', inplace=True, axis=1)
         
-        self.logger.info("Data columns preparation finished")
+        # self.logger.info("Data columns preparation finished")
 
 
     def create_sdg_classifier(self):
@@ -218,12 +217,14 @@ class ExtraDataClassifierSimple(object):
             # Predictor is an SVM trained on Hashing counts sparse matrix.
  
             for field in self.fields:
+                print("VECTORIZING FOR", field)
                 if not self.vectorizers[field]:  # don't think this clause is ever true
+                    print("No field in vectorizer")
                     continue
                 
                 # Grab all invoices that have target value 
                 invoices_with_field = [i for i in invoices if field in i.values]
-                self.logger.info(f'Processing field {field}: {len(invoices_with_field)} invoices')
+                # self.logger.info(f'Processing field {field}: {len(invoices_with_field)} invoices')
 
                 # Only store vectorized representation, otherwise memory usage grows very rapidly
                 vectorized = self.vectorizers[field].transform(invoices_with_field)  # triggers both clean and vectorize steps on IR attribute
@@ -237,7 +238,7 @@ class ExtraDataClassifierSimple(object):
 
                 self.targets[field] += [json.dumps(i.values[field]) for i in invoices_with_field]  # y values for this field's predictor
 
-            self.logger.info('%.1fMB', resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024)
+            ## self.logger.info('%.1fMB', resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024)
 
     def extract_data(self) -> None:
         '''
@@ -252,7 +253,7 @@ class ExtraDataClassifierSimple(object):
             c.clear()
 
         data = self.df[['id', 'counterparty_name', 'counterparty_rfc', 'descriptions', 'nature', 'cost_center']]
-        self.logger.info('Extracting data from %s new invoices', len(data))
+        # self.logger.info('Extracting data from %s new invoices', len(data))
 
         chunk: Dict[int, InvoiceRecord] = {}
         for index, hit in tqdm(data.iterrows(), total=len(data)):
@@ -279,14 +280,16 @@ class ExtraDataClassifierSimple(object):
             """
 
             if not self.fields:
+                print("no fields to predict")
                 return
 
             # 1. Determine target viability of a field
             for field in self.fields:
                 classes = self.get_classes(field)
-                self.logger.info('[%s] Extracted %s unique classes', field, len(classes))
-                self.logger.info('[%s] %s', field, repr(classes))
-
+                # self.logger.info('[%s] Extracted %s unique classes', field, len(classes))
+                print(f'[{field}] Extracted {len(classes)} unique classes')
+                # self.logger.info('[%s] %s', field, repr(classes))
+                
                 if 2 <= len(classes) <= MAX_CLASSES:
                     self.is_viable = True  # no transcendence
                     part = 'all' # otherwise comes from worklow.fields.fieldname.classifier.part
@@ -299,23 +302,28 @@ class ExtraDataClassifierSimple(object):
                     ])
                     # HashVectorizer uses occurrence counts (0 or 1), and n_features = 2**18. could we tweak up to 2**20 which is default?
                 else:
-                    self.logger.info('[%s] Not viable: %s classes', field, len(classes))
+                    # self.logger.info('[%s] Not viable: %s classes', field, len(classes))
+                    print(f"[{field}] Not viable: {len(classes)} classes")
 
             # 2. Extract vectorized data for the viable fields, register time taken
             start_time = time.time()
             self.extract_data()
-            self.logger.info('Extracted data in %s seconds', time.time() - start_time)
+            # self.logger.info('Extracted data in %s seconds', time.time() - start_time)
+            print(f"Extracted data in {time.time() - start_time} seconds")
 
             # 3. Train viable fields
             for field in self.fields:
                 if self.vectorizers[field]:  # is viable
                     start_time = time.time()
                     # initialize the sdg classifier
-                    self.clfs[field] = self.create_classifier()
+                    self.clfs[field] = self.create_sdg_classifier()
                     # train the classifier for this field using stored y labels array
+                    print(f"Data vectorized shape {len(self.data_vectorized[field])}", self.data_vectorized[field])
+                    print(f"Label values{len(self.targets[field])}", self.targets[field])
                     self.clfs[field].fit(self.data_vectorized[field], self.targets[field])  
 
-                    self.logger.info('[%s] Trained classifier in %s seconds', field, time.time() - start_time)
+                    # self.logger.info('[%s] Trained classifier in %s seconds', field, time.time() - start_time)
+                    print(f"[{field}] Trained classifier in {time.time() - start_time} seconds")
 
             # 4. We now have classifiers trained for every field... is the target included??
 
