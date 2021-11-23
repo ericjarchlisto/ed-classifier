@@ -4,7 +4,7 @@ import math
 import re
 #import resource # Linux specific
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 import numpy as np
@@ -27,6 +27,8 @@ EXTRACTION_CHUNK_SIZE = 5000
 PROCESSING_CHUNK_SIZE = 1000
 BETA = 0.25  # Prioritize precision over recall
 MAX_CLASSES = 500
+DATA_LEN = 26040
+N_TRAIN = int(DATA_LEN*0.75)
 
 DATASET_PATH = './data/data-sample-invoices.csv'
 
@@ -351,6 +353,74 @@ class ExtraDataClassifierSimple(object):
                  for feature, pvalue in zip(
                      feature_names[top_ranked_features_indices],
                      ch2.pvalues_[top_ranked_features_indices])]
+    
+    def show_top_features(self, field):
+        # x_train, x_test, y_train, y_test = model_selection.train_test_split(
+        #     self.data_vectorized[field], np.array(self.targets[field]), test_size=0.3, random_state=0)
+        
+        x_train = self.data_vectorized[field]
+        y_train = np.array(self.targets[field])
+
+        return self._top_ranked_features(x_train, y_train)
+    
+    def _benchmark(self, clf, x_test, y_test, field):
+        '''Performs testing and computes performance metrics given vectorized data and true target values'''
+        y_pred = clf.predict(x_test)
+
+        print(f"Unpredicted labels for [{field}]", set(y_test) - set(y_pred))
+
+        confident = {}
+
+        best_f_score, best_threshold = 0.0, None
+
+        for threshold in np.arange(0, 4, 0.2):
+            n_confident = 0
+            n_confident_wrong = 0
+            for prediction, actual, confidence in zip(y_pred, y_test, clf.decision_function(x_test)):
+                if np.max(confidence) > threshold:
+                    n_confident += 1
+                    if prediction != actual:
+                        n_confident_wrong += 1
+
+            if n_confident > 0:
+                recall = 100.0 * (n_confident - n_confident_wrong) / len(y_test)
+                precision = 100.0 * (n_confident - n_confident_wrong) / n_confident
+                f_score = (1 + BETA ** 2) * (precision * recall) / ((BETA ** 2) * precision + recall)
+
+                if f_score > best_f_score:
+                    best_threshold = threshold
+                    best_f_score = f_score
+
+                confident[threshold] = {'recall': recall, 'precision': precision, 'f_score': f_score}
+        # Precision - measures true positive predictions over positive predictions made (weighted average)
+        # Recall - measures true positive predictions over total positive observations (weighted average)
+        # f1 - 
+        # confident - a dictionary with threshold value -> P,R, and f_scores
+        # the best f score and the best threshold corresponding to that score
+        return {
+            'precision': metrics.precision_score(y_test, y_pred, average='weighted', pos_label=None),
+            'recall':    metrics.recall_score(y_test, y_pred, average='weighted', pos_label=None),
+            'f1':        metrics.f1_score(y_test, y_pred, average='weighted', pos_label=None),
+            'confident': confident,
+            'confident_best_f_score': best_f_score,
+            'confident_best_threshold': best_threshold
+        }
+
+    def benchmark(self, field):
+        '''
+        Perform training and testing on a given field classifier,
+        using a 70-30 split, with a temproary classifier and cached data_vectorized
+        '''
+        x_train, x_test, y_train, y_test = model_selection.train_test_split(
+            self.data_vectorized[field], np.array(self.targets[field]), test_size=0.3, random_state=0)
+
+        # Create a temporary classifier for benchmarking
+        clf = self.create_sgd_classifier()
+        clf.fit(x_train, y_train)
+        return self._benchmark(clf, x_test, y_test, field)
+    
+
+
 '''
 OBSERVATIONS WRT CURRENT IMPLEMENTATION
 
@@ -358,4 +428,5 @@ OBSERVATIONS WRT CURRENT IMPLEMENTATION
 - there is no pre-selection of inputs and targets. the data we have is the data we use.
 - thus, there is a risk that for a given target there is not enough input data, since we can't use null values
 - should there be a predefinition for targets? some mapping of f(input fields) -> (target field) instead of f(inputs except target) -> target
+
 '''
