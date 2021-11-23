@@ -55,7 +55,7 @@ class PartSelector(BaseEstimator, TransformerMixin):
         # no fitting required
         return self
 
-    def _convertAccented(text, pattobj):
+    def _convertAccented(self, text, pattobj):
             '''
             Restore characters from lowercase text, like "&oacute;" into "ó"
             '''
@@ -139,26 +139,33 @@ class ExtraDataClassifierSimple(object):
             self.update() # the very first train
 
     def prepareDataFrame(self):
-        '''Standardize dataframe columns for Data extraction'''
+        '''Standardize dataframe columns for Data extraction;
+            cast nature and cost_center into category (int) types'''
         if 'nature' in self.df:
             self.df['nature'] = self.df['nature'].astype('Int64')
-            self.df['nature'] = self.df['nature'].astype('category')
+            self.df['nature'] = self.df['nature'].astype('category')            
+
         else: 
             # self.logger.warning("INIT \tno `nature` in dataframe")
+            print("INIT \tno `nature` in dataframe")
+
         if 'cost_center' in self.df:
             self.df['cost_center'] = self.df['cost_center'].astype('Int64')
             self.df['cost_center'] = self.df['cost_center'].astype('category')
         else: 
             # self.logger.warning("INIT \tno `cost_center` in dataframe")
+            print("INIT \tno `cost_center` in dataframe")
         
         if 'text' in self.df:
             # remove the overall null column of `text`
             self.df.drop('text', inplace=True, axis=1)
         
         # self.logger.info("Data columns preparation finished")
+        print("Data columns preparation finished")
 
 
-    def create_sdg_classifier(self):
+    def create_sgd_classifier(self):
+        '''Create a Stochastic Gradient Descent SVM'''
         # no customization YET
         return SGDClassifier(alpha=1e-5, loss='log', n_jobs=-1) # by default is an SVM
     
@@ -173,15 +180,14 @@ class ExtraDataClassifierSimple(object):
     def _process_hit(self, r: Any) -> Optional[InvoiceRecord]:
         '''Receive a dataframe row, return an InvoiceRecord'''
         # If we used timestamp, we would update self.last_modified here
-        
         def _get_value(r: Dict[str, Any], field: str) -> Optional[Any]:
             '''Return specified value from row if not empty'''
 
             value = r[field]
-            
-            if isinstance(value, str) and value.strip() != '':
+
+            if isinstance(value, str) and value.strip() != '' or isinstance(value,int):
                 return value
-            # Values could be NaN objects 
+            # Values could be NaN objects (stored as float)
             return None
 
         values = {}  # dictionary of target field:value
@@ -193,7 +199,6 @@ class ExtraDataClassifierSimple(object):
         
         # descriptions may be NaN object. If so, convert to empty str
         descriptions = _get_value(r, 'descriptions') or ''
-
         # return InvoiceRecord if there is at least 1 target field
         if values:  
             return InvoiceRecord(
@@ -214,10 +219,14 @@ class ExtraDataClassifierSimple(object):
             pass
            
     def _vectorize(self, invoices: List[InvoiceRecord]) -> None:
+            '''
+            Called by _process_chunk
+            Receives a processing chunk and for every field, creates a 
+            binary count sparse matrix using the invoices with the target.
+            '''
             # Predictor is an SVM trained on Hashing counts sparse matrix.
  
             for field in self.fields:
-                print("VECTORIZING FOR", field)
                 if not self.vectorizers[field]:  # don't think this clause is ever true
                     print("No field in vectorizer")
                     continue
@@ -228,7 +237,7 @@ class ExtraDataClassifierSimple(object):
 
                 # Only store vectorized representation, otherwise memory usage grows very rapidly
                 vectorized = self.vectorizers[field].transform(invoices_with_field)  # triggers both clean and vectorize steps on IR attribute
-                
+
                 if self.data_vectorized[field] is not None:
                     # append it to the already stored sparse matrix
                     self.data_vectorized[field] = sparse.vstack([self.data_vectorized[field], vectorized])
@@ -246,7 +255,6 @@ class ExtraDataClassifierSimple(object):
         which updates self.data_vectorized and self.targets.
         It 
         '''
-
         def _process_chunk(c: Dict[int, InvoiceRecord]) -> None:
             # self._add_descriptions(c)  # invoices already have not-null descriptions
             self._vectorize(list(c.values())) # vectorize invoices list
@@ -254,18 +262,18 @@ class ExtraDataClassifierSimple(object):
 
         data = self.df[['id', 'counterparty_name', 'counterparty_rfc', 'descriptions', 'nature', 'cost_center']]
         # self.logger.info('Extracting data from %s new invoices', len(data))
+        print(f'Extracting data from {len(data)} new invoices')
 
         chunk: Dict[int, InvoiceRecord] = {}
         for index, hit in tqdm(data.iterrows(), total=len(data)):
             # iterate over the rows of data, named hit
             record = self._process_hit(hit)  # returns InvoiceRecord
-            
-            if record:
+            if record is not None:
                 chunk[hit['id']] = record # can it be index?
 
             if len(chunk) >= EXTRACTION_CHUNK_SIZE:
-                _process_chunk(chunk)  # vectorize invoices so far and then clear the chunk
 
+                _process_chunk(chunk)  # vectorize invoices so far and then clear the chunk
         # Leftover results (modulus PROCESSING_CHUNK_SIZE)
         if chunk:
             _process_chunk(chunk)
@@ -284,6 +292,7 @@ class ExtraDataClassifierSimple(object):
                 return
 
             # 1. Determine target viability of a field
+            print("1) Getting target classes viability")
             for field in self.fields:
                 classes = self.get_classes(field)
                 # self.logger.info('[%s] Extracted %s unique classes', field, len(classes))
@@ -306,31 +315,46 @@ class ExtraDataClassifierSimple(object):
                     print(f"[{field}] Not viable: {len(classes)} classes")
 
             # 2. Extract vectorized data for the viable fields, register time taken
+            print("2) Extracting and vectorizing...")
             start_time = time.time()
             self.extract_data()
             # self.logger.info('Extracted data in %s seconds', time.time() - start_time)
             print(f"Extracted data in {time.time() - start_time} seconds")
-
+            
             # 3. Train viable fields
+            print("3) Train Viable Fields")
             for field in self.fields:
                 if self.vectorizers[field]:  # is viable
+                    print(f"{field} is a target. Creating classifier...")
                     start_time = time.time()
-                    # initialize the sdg classifier
-                    self.clfs[field] = self.create_sdg_classifier()
+                    # initialize the sgd classifier
+                    self.clfs[field] = self.create_sgd_classifier()
                     # train the classifier for this field using stored y labels array
-                    print(f"Data vectorized shape {len(self.data_vectorized[field])}", self.data_vectorized[field])
-                    print(f"Label values{len(self.targets[field])}", self.targets[field])
                     self.clfs[field].fit(self.data_vectorized[field], self.targets[field])  
 
                     # self.logger.info('[%s] Trained classifier in %s seconds', field, time.time() - start_time)
                     print(f"[{field}] Trained classifier in {time.time() - start_time} seconds")
 
-            # 4. We now have classifiers trained for every field... is the target included??
+            # 4. DONE. We now have classifiers trained for every target field... is the target included??
 
+    def _top_ranked_features(self, field, x_train, y_train):
+        '''Not sure what this one does yet'''
+        ch2 = SelectKBest(chi2, k=25)
+        ch2.fit_transform(x_train, y_train)
+        top_ranked_features = sorted(enumerate(ch2.scores_), key=lambda x: (0 if math.isnan(x[1]) else x[1]), reverse=True)[:25]
+
+        feature_names = np.asarray(self.vectorizers[field].get_feature_names())
+
+        top_ranked_features_indices = list(map(list, zip(*top_ranked_features)))[0]
+
+        return [{'feature': feature, 'p': (None if math.isnan(pvalue) else pvalue)}
+                 for feature, pvalue in zip(
+                     feature_names[top_ranked_features_indices],
+                     ch2.pvalues_[top_ranked_features_indices])]
 '''
 OBSERVATIONS WRT CURRENT IMPLEMENTATION
 
-- Data is extracted as input features to predict any other target (all vs all) under a correlation premise.
+- Data is extracted as input features to predict any other target (all vs all) under a correlation premise (¿).
 - there is no pre-selection of inputs and targets. the data we have is the data we use.
 - thus, there is a risk that for a given target there is not enough input data, since we can't use null values
 - should there be a predefinition for targets? some mapping of f(input fields) -> (target field) instead of f(inputs except target) -> target
