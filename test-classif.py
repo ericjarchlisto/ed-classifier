@@ -31,14 +31,16 @@ if __name__=="__main__":
     # Some metrics are ill-defined (set to default) because some labels in test set dont appear in the predictions made,
     # hence they cannot be computed.
     
-    # print("\nPERFORMANCE")
+    print("\nPERFORMANCE")
+    print("\nNature:")
+    printPerformance(nature_pfm)
+    print("Cost_center:")
+    printPerformance(cost_center_pfm)
 
-    # printPerformance('nature')
-    # printPerformance('cost_center')
 
-    print("BEST FEATURES")
-    nature_topft = ed.show_top_features('nature')
-    cost_center_topft = ed.show_top_features('cost_center')
+    # print("BEST FEATURES")
+    # nature_topft = ed.show_top_features('nature')
+    # cost_center_topft = ed.show_top_features('cost_center')
 
-    printBestFeatures(nature_topft)
-    printBestFeatures(cost_center_topft)
+    # printBestFeatures(nature_topft)
+    # printBestFeatures(cost_center_topft)

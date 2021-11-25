@@ -22,7 +22,7 @@ from sklearn.pipeline import Pipeline
 from tqdm import tqdm
 
 # params
-CONFIDENCE_THRESHOLD = 0.6
+CONFIDENCE_THRESHOLD = 0.6          # minimum `decision_function` value for a datapoint's class prediction
 EXTRACTION_CHUNK_SIZE = 5000
 PROCESSING_CHUNK_SIZE = 1000
 BETA = 0.25  # Prioritize precision over recall
@@ -125,7 +125,7 @@ class ExtraDataClassifierSimple(object):
     targets: Dict[str, List[str]]   # field name -> [label values]
     last_modified_on: int  # UTC timestamp, for selecting the data to use for partial fit
 
-    def __init__(self, clf_factory=None, part='all'):
+    def __init__(self, clf_factory=None, part='all', updateOnStart=False):
             # self.logger = logging.getLogger(f'{__package__}.{__name__}.simple-classif')
             self.df = pd.read_csv(DATASET_PATH, index_col=0)
             self.prepareDataFrame()
@@ -138,7 +138,12 @@ class ExtraDataClassifierSimple(object):
             self.part = part  
             self.is_viable = False   # huh?
             self.clfs = {}  # field name -> sklearn classifier: f(invoices, target_labels_array)
-            self.update() # the very first train
+            if updateOnStart:
+                print("Vectorize and train classifiers...")
+                self.update() # the very first train
+            else:
+                print("only vectorize Data...")
+                self.onlyVectorizeData()
 
     def prepareDataFrame(self):
         '''Standardize dataframe columns for Data extraction;
@@ -166,10 +171,21 @@ class ExtraDataClassifierSimple(object):
         print("Data columns preparation finished")
 
 
-    def create_sgd_classifier(self):
+    def create_svm_classifier(self):
         '''Create a Stochastic Gradient Descent SVM'''
         # no customization YET
+        return SGDClassifier(alpha=1e-5, n_jobs=-1) # by default is an SVM
+
+    def create_log_classifier(self):
+        '''Create a Stochastic Gradient Descent Logistic Regressor'''
+        # no customization YET
         return SGDClassifier(alpha=1e-5, loss='log', n_jobs=-1) # by default is an SVM
+
+    def create_perceptron_classifier(self):
+        '''Create a Stochastic Gradient Descent Perceptron Classifier'''
+        # no customization YET
+        return SGDClassifier(alpha=1e-5, loss='perceptron', n_jobs=-1) # by default is an SVM
+    
     
 
     def get_classes(self, field:str) -> Set[str]:
@@ -280,6 +296,43 @@ class ExtraDataClassifierSimple(object):
         if chunk:
             _process_chunk(chunk)
 
+    def onlyVectorizeData(self):
+        '''Only populates vectorizer and data_vectorized dicts, 
+        avoids training and populating the clfs dict'''
+        if not self.fields:
+                print("no fields to predict")
+                return
+
+        # 1. Determine target viability of a field
+        print("1) Getting target classes viability")
+        for field in self.fields:
+            classes = self.get_classes(field)
+            # self.logger.info('[%s] Extracted %s unique classes', field, len(classes))
+            print(f'[{field}] Extracted {len(classes)} unique classes')
+            # self.logger.info('[%s] %s', field, repr(classes))
+            
+            if 2 <= len(classes) <= MAX_CLASSES:
+                self.is_viable = True  # no transcendence
+                part = 'all' # otherwise comes from worklow.fields.fieldname.classifier.part
+                
+                self.vectorizers[field] = Pipeline([
+                    ('selector', PartSelector(part)),
+                    ('vectorizer',
+                    HashingVectorizer(n_features=262144, ngram_range=(1, 2),
+                                    binary=True, strip_accents='ascii'))
+                ])
+                # HashVectorizer uses occurrence counts (0 or 1), and n_features = 2**18. could we tweak up to 2**20 which is default?
+            else:
+                # self.logger.info('[%s] Not viable: %s classes', field, len(classes))
+                print(f"[{field}] Not viable: {len(classes)} classes")
+
+        # 2. Extract vectorized data for the viable fields, register time taken
+        print("2) Extracting and vectorizing...")
+        start_time = time.time()
+        self.extract_data()
+        # self.logger.info('Extracted data in %s seconds', time.time() - start_time)
+        print(f"Extracted data in {time.time() - start_time} seconds")
+
 
     def update(self):
             """Process next batch of invoices (based on categorization time),
@@ -330,7 +383,7 @@ class ExtraDataClassifierSimple(object):
                     print(f"{field} is a target. Creating classifier...")
                     start_time = time.time()
                     # initialize the sgd classifier
-                    self.clfs[field] = self.create_sgd_classifier()
+                    self.clfs[field] = self.create_perceptron_classifier()
                     # train the classifier for this field using stored y labels array
                     self.clfs[field].fit(self.data_vectorized[field], self.targets[field])  
 
@@ -349,7 +402,8 @@ class ExtraDataClassifierSimple(object):
         ch2.fit_transform(x_train, y_train)
         top_ranked_features = sorted(enumerate(ch2.scores_), key=lambda x: (0 if math.isnan(x[1]) else x[1]), reverse=True)[:25]
 
-        feature_names = np.asarray(self.vectorizers[field].get_feature_names())   # vectorizer is expected
+        # VECTORIZER SHOULD BE STATEFUL. HASHINGVECTORIZER WON'T WORK.
+        feature_names = np.asarray(self.vectorizers[field].named_steps['vectorizer'].get_feature_names())   # only works if vectorizer is stateful
 
         top_ranked_features_indices = list(map(list, zip(*top_ranked_features)))[0]
 
@@ -370,14 +424,14 @@ class ExtraDataClassifierSimple(object):
 
     def _get_accuracy(self, y_pred, y_true):
         '''Computes the fraction of correct predictions over total predictions'''
-        pass
+        return np.sum(y_pred == y_true) / len(y_pred)
 
     def _benchmark(self, clf, x_test, y_test, field):
         '''Performs testing and computes performance metrics given vectorized data and true target values'''
         y_pred = clf.predict(x_test)
 
-        print(f"Unpredicted labels for [{field}]", set(y_test) - set(y_pred))
-
+        #print(f"Unpredicted labels for [{field}]", set(y_test) - set(y_pred))
+        print(f"Accuracy for classfier[{field}]: {100*(self._get_accuracy(y_pred, y_test))}%")
         confident = {}
 
         best_f_score, best_threshold = 0.0, None
@@ -385,16 +439,20 @@ class ExtraDataClassifierSimple(object):
         for threshold in np.arange(0, 4, 0.2):
             n_confident = 0
             n_confident_wrong = 0
-            # clf.decision_function returns the condifence score
+            # clf.decision_function returns the confidence score.
+            # The confidence score for a sample is proportional to the signed distance of that sample to the hyperplane
             for prediction, actual, confidence in zip(y_pred, y_test, clf.decision_function(x_test)):
+                # simulate a decision threshold... it's an added layer for the listo application
                 if np.max(confidence) > threshold:
+                    # If the most probable class has confidence larger than the minimum threshold, it is a confident prediction
                     n_confident += 1
                     if prediction != actual:
-                        n_confident_wrong += 1
+                        n_confident_wrong += 1   # confident predictions that are wrong should be minimized! e.g. false positives
 
             if n_confident > 0:
                 recall = 100.0 * (n_confident - n_confident_wrong) / len(y_test)
                 precision = 100.0 * (n_confident - n_confident_wrong) / n_confident
+                # not sure about this formula...
                 f_score = (1 + BETA ** 2) * (precision * recall) / ((BETA ** 2) * precision + recall)
 
                 if f_score > best_f_score:
@@ -425,8 +483,12 @@ class ExtraDataClassifierSimple(object):
             self.data_vectorized[field], np.array(self.targets[field]), test_size=0.3, random_state=0)
 
         # Create a temporary classifier for benchmarking
-        clf = self.create_sgd_classifier()
-        clf.fit(x_train, y_train)
+        clf = self.create_svm_classifier()
+        try:
+            #clf.partial_fit(x_train, y_train, classes=set(y_train))
+            clf.fit(x_train, y_train)
+        except Exception as e:
+            print("X____X   error", e)
         return self._benchmark(clf, x_test, y_test, field)
     
 

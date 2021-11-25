@@ -6,7 +6,9 @@ TOCONSIDER
 
 
 TODOS
-- Add a flag "initial models" to indicate whether to train models on instance initialization
+- Add a flag "initial models" to indicate whether to train models on instance initialization **DONE, onlyVectorize function
+- revise benchmark function: what is threshold?
+
 - Add a flag to toggle data cleaning (convert accented, lowercasing) 
 - Start benchmark with and without partial_fit
 - Ask evgeny: how frequently do we completely retrain? given that learning rate decreases
