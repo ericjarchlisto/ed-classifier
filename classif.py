@@ -340,12 +340,16 @@ class ExtraDataClassifierSimple(object):
             # 4. DONE. We now have classifiers trained for every target field... is the target included??
 
     def _top_ranked_features(self, field, x_train, y_train):
-        '''Not sure what this one does yet'''
+        '''
+        Returns the sorted list of feature names according to statistical score (chi squared test for non-negative features).
+        Chi-squared test measures the dependence between stochastic variables. This function `weeds out` 
+        features that are likely to be independent of class, therefore irrelevant for clasification
+        '''
         ch2 = SelectKBest(chi2, k=25)
         ch2.fit_transform(x_train, y_train)
         top_ranked_features = sorted(enumerate(ch2.scores_), key=lambda x: (0 if math.isnan(x[1]) else x[1]), reverse=True)[:25]
 
-        feature_names = np.asarray(self.vectorizers[field].get_feature_names())
+        feature_names = np.asarray(self.vectorizers[field].get_feature_names())   # vectorizer is expected
 
         top_ranked_features_indices = list(map(list, zip(*top_ranked_features)))[0]
 
@@ -361,8 +365,13 @@ class ExtraDataClassifierSimple(object):
         x_train = self.data_vectorized[field]
         y_train = np.array(self.targets[field])
 
-        return self._top_ranked_features(x_train, y_train)
+        return self._top_ranked_features(field, x_train, y_train)
     
+
+    def _get_accuracy(self, y_pred, y_true):
+        '''Computes the fraction of correct predictions over total predictions'''
+        pass
+
     def _benchmark(self, clf, x_test, y_test, field):
         '''Performs testing and computes performance metrics given vectorized data and true target values'''
         y_pred = clf.predict(x_test)
@@ -376,6 +385,7 @@ class ExtraDataClassifierSimple(object):
         for threshold in np.arange(0, 4, 0.2):
             n_confident = 0
             n_confident_wrong = 0
+            # clf.decision_function returns the condifence score
             for prediction, actual, confidence in zip(y_pred, y_test, clf.decision_function(x_test)):
                 if np.max(confidence) > threshold:
                     n_confident += 1
