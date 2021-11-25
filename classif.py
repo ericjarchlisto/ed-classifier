@@ -14,7 +14,7 @@ from scipy import sparse
 
 from sklearn import metrics, model_selection
 from sklearn.base import BaseEstimator, TransformerMixin
-from sklearn.feature_extraction.text import HashingVectorizer
+from sklearn.feature_extraction.text import HashingVectorizer, TfidfVectorizer, CountVectorizer
 from sklearn.feature_selection import SelectKBest, chi2
 from sklearn.linear_model import SGDClassifier
 from sklearn.model_selection import GridSearchCV
@@ -125,11 +125,11 @@ class ExtraDataClassifierSimple(object):
     targets: Dict[str, List[str]]   # field name -> [label values]
     last_modified_on: int  # UTC timestamp, for selecting the data to use for partial fit
 
-    def __init__(self, clf_factory=None, part='all', updateOnStart=False):
+    def __init__(self, clf_factory=None, part='all', updateOnStart=False, vect='hash'):
             # self.logger = logging.getLogger(f'{__package__}.{__name__}.simple-classif')
             self.df = pd.read_csv(DATASET_PATH, index_col=0)
             self.prepareDataFrame()
-
+            self.vect=vect
             self.fields = ['nature', 'cost_center']  # targets
             self.targets = {field: [] for field in self.fields}  # field name -> labels values array
             self.vectorizers = {field: None for field in self.fields}  # field name -> sklearn vectorizer v(invoices_with_field) 
@@ -254,7 +254,11 @@ class ExtraDataClassifierSimple(object):
                 # self.logger.info(f'Processing field {field}: {len(invoices_with_field)} invoices')
 
                 # Only store vectorized representation, otherwise memory usage grows very rapidly
-                vectorized = self.vectorizers[field].transform(invoices_with_field)  # triggers both clean and vectorize steps on IR attribute
+                if self.vect=='hash':
+                    vectorized = self.vectorizers[field].transform(invoices_with_field)  # triggers both clean and vectorize steps on IR attribute
+                else:
+                    vectorized = self.vectorizers[field].fit_transform(invoices_with_field)  # triggers both clean and vectorize steps on IR attribute
+
 
                 if self.data_vectorized[field] is not None:
                     # append it to the already stored sparse matrix
@@ -282,6 +286,11 @@ class ExtraDataClassifierSimple(object):
         # self.logger.info('Extracting data from %s new invoices', len(data))
         print(f'Extracting data from {len(data)} new invoices')
 
+        if self.vect=='hash':
+            chunk_size=EXTRACTION_CHUNK_SIZE
+        else:
+            chunk_size = len(self.df)
+
         chunk: Dict[int, InvoiceRecord] = {}
         for index, hit in tqdm(data.iterrows(), total=len(data)):
             # iterate over the rows of data, named hit
@@ -289,7 +298,7 @@ class ExtraDataClassifierSimple(object):
             if record is not None:
                 chunk[hit['id']] = record # can it be index?
 
-            if len(chunk) >= EXTRACTION_CHUNK_SIZE:
+            if len(chunk) >= chunk_size:
 
                 _process_chunk(chunk)  # vectorize invoices so far and then clear the chunk
         # Leftover results (modulus PROCESSING_CHUNK_SIZE)
@@ -315,13 +324,30 @@ class ExtraDataClassifierSimple(object):
                 self.is_viable = True  # no transcendence
                 part = 'all' # otherwise comes from worklow.fields.fieldname.classifier.part
                 
-                self.vectorizers[field] = Pipeline([
-                    ('selector', PartSelector(part)),
-                    ('vectorizer',
-                    HashingVectorizer(n_features=262144, ngram_range=(1, 2),
-                                    binary=True, strip_accents='ascii'))
-                ])
+                if self.vect=='hash':
+                    self.vectorizers[field] = Pipeline([
+                        ('selector', PartSelector(part)),
+                        ('vectorizer',
+                        HashingVectorizer(n_features=262144, ngram_range=(1, 2),
+                                        binary=True, strip_accents='ascii'))
+                    ])
                 # HashVectorizer uses occurrence counts (0 or 1), and n_features = 2**18. could we tweak up to 2**20 which is default?
+                
+                # STATEFUL VECTORIZERS - use in-memory vocabulary, do not support incremental learning. Only meant for benchmarking keywords
+                if self.vect=='ngram':
+                    self.vectorizers[field] = Pipeline([
+                        ('selector', PartSelector(part)),
+                        ('vectorizer',
+                        CountVectorizer(min_df=5, ngram_range=(1,2)))
+                    ])
+
+                if self.vect=='tfidf':
+                    self.vectorizers[field] = Pipeline([
+                        ('selector', PartSelector(part)),
+                        ('vectorizer',
+                        TfidfVectorizer(min_df=5))
+                    ])
+
             else:
                 # self.logger.info('[%s] Not viable: %s classes', field, len(classes))
                 print(f"[{field}] Not viable: {len(classes)} classes")

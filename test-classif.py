@@ -24,7 +24,7 @@ def printBestFeatures(topft):
 
 if __name__=="__main__":
 
-    ed = ExtraDataClassifierSimple()
+    ed = ExtraDataClassifierSimple(vect='ngram')
 
     cost_center_pfm = ed.benchmark('cost_center')
     nature_pfm = ed.benchmark('nature')
@@ -38,9 +38,10 @@ if __name__=="__main__":
     printPerformance(cost_center_pfm)
 
 
-    # print("BEST FEATURES")
-    # nature_topft = ed.show_top_features('nature')
-    # cost_center_topft = ed.show_top_features('cost_center')
-
-    # printBestFeatures(nature_topft)
-    # printBestFeatures(cost_center_topft)
+    print("BEST FEATURES")
+    nature_topft = ed.show_top_features('nature')
+    cost_center_topft = ed.show_top_features('cost_center')
+    print("================== NATURE")
+    printBestFeatures(nature_topft)
+    print("================== COST CENTER")
+    printBestFeatures(cost_center_topft)
