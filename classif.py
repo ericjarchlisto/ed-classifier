@@ -93,7 +93,7 @@ class PartSelector(BaseEstimator, TransformerMixin):
                 ]).replace('\n', ' ') + (i.descriptions or '').replace('\n', ' ')
                 
                 # should we lowercase it all?
-                all_text = self._convertAccented(all_text.lower(), accent_rgx)
+                #all_text = self._convertAccented(all_text.lower(), accent_rgx)
 
                 if self.part.startswith('extract_regex:'):
                     # Customer workflow may require to predict based on specific words from text
@@ -179,12 +179,12 @@ class ExtraDataClassifierSimple(object):
     def create_log_classifier(self):
         '''Create a Stochastic Gradient Descent Logistic Regressor'''
         # no customization YET
-        return SGDClassifier(alpha=1e-5, loss='log', n_jobs=-1) # by default is an SVM
+        return SGDClassifier(alpha=1e-5, loss='log', n_jobs=-1) 
 
     def create_perceptron_classifier(self):
         '''Create a Stochastic Gradient Descent Perceptron Classifier'''
         # no customization YET
-        return SGDClassifier(alpha=1e-5, loss='perceptron', n_jobs=-1) # by default is an SVM
+        return SGDClassifier(alpha=1e-5, loss='perceptron', n_jobs=-1) 
     
     
 
@@ -457,7 +457,7 @@ class ExtraDataClassifierSimple(object):
         y_pred = clf.predict(x_test)
 
         #print(f"Unpredicted labels for [{field}]", set(y_test) - set(y_pred))
-        print(f"Accuracy for classfier[{field}]: {100*(self._get_accuracy(y_pred, y_test))}%")
+        print(f"=========> Accuracy for classfier[{field}]: {100*(self._get_accuracy(y_pred, y_test))}%")
         confident = {}
 
         best_f_score, best_threshold = 0.0, None
@@ -509,7 +509,7 @@ class ExtraDataClassifierSimple(object):
             self.data_vectorized[field], np.array(self.targets[field]), test_size=0.3, random_state=0)
 
         # Create a temporary classifier for benchmarking
-        clf = self.create_svm_classifier()
+        clf = self.create_log_classifier()
         try:
             #clf.partial_fit(x_train, y_train, classes=set(y_train))
             clf.fit(x_train, y_train)

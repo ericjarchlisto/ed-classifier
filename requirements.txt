@@ -2,3 +2,4 @@ notebook
 scikit-learn
 numpy
 pandas
+xgboost
