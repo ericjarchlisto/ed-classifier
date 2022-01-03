@@ -3,3 +3,7 @@
 - this way we ensure that data preparation is the same for all
 - realizar pruebas para poder cargar (y recargar) un modelo
 - usar nuestras propias medidas y usar `score`
+
+PROBAR GUARDADO CON pickle Y joblib
+
+https://machinelearningmastery.com/save-load-machine-learning-models-python-scikit-learn/

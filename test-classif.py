@@ -25,19 +25,24 @@ def printBestFeatures(topft):
 if __name__=="__main__":
 
     ed = ExtraDataClassifierSimple()  # hashing vectorizer by default
-    for clf_name in ('xgb',): # ('svm', 'log', 'per', 'dt', 'ab', 'xgb):
-        print(f"TESTING FOR <{clf_name}>")
-        cost_center_pfm = ed.benchmark('cost_center', clf_name)
-        nature_pfm = ed.benchmark('nature', clf_name)
-        # Some metrics are ill-defined (set to default) because some labels in test set dont appear in the predictions made,
-        # hence they cannot be computed.
+
+    # TEST PICKLING AND STUFF
+
+
+
+    # for clf_name in ('xgb',): # ('svm', 'log', 'per', 'dt', 'ab', 'xgb):
+    #     print(f"TESTING FOR <{clf_name}>")
+    #     cost_center_pfm = ed.benchmark('cost_center', clf_name)
+    #     nature_pfm = ed.benchmark('nature', clf_name)
+    #     # Some metrics are ill-defined (set to default) because some labels in test set dont appear in the predictions made,
+    #     # hence they cannot be computed.
         
-        print("\nPERFORMANCE")
-        print("\nNature:")
-        printPerformance(nature_pfm)
-        print("Cost_center:")
-        printPerformance(cost_center_pfm)
-        print()
+    #     print("\nPERFORMANCE")
+    #     print("\nNature:")
+    #     printPerformance(nature_pfm)
+    #     print("Cost_center:")
+    #     printPerformance(cost_center_pfm)
+    #     print()
 
     # print("BEST FEATURES")
     # nature_topft = ed.show_top_features('nature')
