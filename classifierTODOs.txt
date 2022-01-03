@@ -1,13 +1,5 @@
-ListoClassifier
 
-TOCONSIDER
-- remove punctuation (almost no punctuation in text)
-- 
-
-
-TODOS
-- Ask evgeny: how frequently do we completely retrain? given that learning rate decreases
-**DONE, answer is 'constant learning rate!'
-
-- Test XGBoost
-
+- Add XgBoost, RandomForest, DecisionTree classifiers in the classif.py file
+- this way we ensure that data preparation is the same for all
+- realizar pruebas para poder cargar (y recargar) un modelo
+- usar nuestras propias medidas y usar `score`

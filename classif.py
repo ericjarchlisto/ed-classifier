@@ -4,12 +4,13 @@ import math
 import re
 #import resource # Linux specific
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 import numpy as np
 import pandas as pd
 from scipy import sparse
+import xgboost as xgb
 # from elasticsearch_dsl.search import Search
 
 from sklearn import metrics, model_selection
@@ -17,6 +18,8 @@ from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.feature_extraction.text import HashingVectorizer, TfidfVectorizer, CountVectorizer
 from sklearn.feature_selection import SelectKBest, chi2
 from sklearn.linear_model import SGDClassifier
+from sklearn.ensemble import RandomForestClassifier, AdaBoostClassifier
+from sklearn.tree import DecisionTreeClassifier
 from sklearn.model_selection import GridSearchCV
 from sklearn.pipeline import Pipeline
 from tqdm import tqdm
@@ -170,6 +173,19 @@ class ExtraDataClassifierSimple(object):
         # self.logger.info("Data columns preparation finished")
         print("Data columns preparation finished")
 
+    def create_clf(self, name, for_field):
+        if name=='svm':
+            return self.create_svm_classifier()
+        elif name=='log':
+            return self.create_log_classifier()
+        elif name=='per':
+            return self.create_perceptron_classifier()
+        elif name=='dt':
+            return self.create_dt_classifier(for_field)
+        elif name=='ab':
+            return self.create_adaboost_classifier(for_field)
+        else: return None
+
 
     def create_svm_classifier(self):
         '''Create a Stochastic Gradient Descent SVM'''
@@ -185,8 +201,53 @@ class ExtraDataClassifierSimple(object):
         '''Create a Stochastic Gradient Descent Perceptron Classifier'''
         # no customization YET
         return SGDClassifier(alpha=1e-5, loss='perceptron', n_jobs=-1) 
-    
-    
+
+    def create_dt_classifier(self, field):
+        '''Create a Decision Tree Classifier'''
+        # no customization YET
+        return DecisionTreeClassifier(max_depth=100, random_state=0)  #25, p:52, n: 73
+
+    def create_rf_classifier(self, field):
+        raise NotImplementedError()
+        # should receive a base estimator with num classes
+        base_estimator = self.create_dt_classifier()
+        return RandomForestClassifier(max_depth=5, n_estimators=10, max_features=1)
+
+    def create_adaboost_classifier(self, field):
+        # should receive a base estimator with num classes
+        print("Creating Adaboost...")
+        return AdaBoostClassifier(
+            base_estimator=DecisionTreeClassifier(max_depth=40),  #10-> cc:40, n:76
+            n_estimators=50,
+            learning_rate=1
+        )
+
+    def create_xgb_classifier(self, x_train, y_train, x_test, y_test):
+
+        dtrain = xgb.DMatrix(x_train, label=y_train)
+        dtest =  xgb.DMatrix(x_test, label=y_test)
+
+        n_classes = len(set(list(y_train) + list(y_test)))
+        params = {
+            'max_depth': 6,
+            'eta': 1, # 0.3
+            'objective':'multi:softmax',
+            'num_class': n_classes,
+            'eval_metric':'merror'
+        }
+
+        watchlist = [(dtest, 'eval'), (dtrain, 'train')]
+        num_rounds = 1
+
+        bst = xgb.train(params, dtrain, num_rounds, watchlist)
+
+        pred_y = bst.predict(dtest)
+        true_y = dtest.get_label()
+
+        a = sum(1 for i in range(len(pred_y)) if pred_y[i] == true_y[i]) / float(len(pred_y))
+        e = 1 - a
+        print('XGB error=%f accuracy=%f' % (e, a))
+
 
     def get_classes(self, field:str) -> Set[str]:
         '''Return set of unique values for the specified column in df'''
@@ -200,15 +261,13 @@ class ExtraDataClassifierSimple(object):
         # If we used timestamp, we would update self.last_modified here
         def _get_value(r: Dict[str, Any], field: str) -> Optional[Any]:
             '''Return specified value from row if not empty'''
-
             value = r[field]
-
             if isinstance(value, str) and value.strip() != '' or isinstance(value,int):
                 return value
-            # Values could be NaN objects (stored as float)
+            # NaN values are objects (stored as float)
             return None
 
-        values = {}  # dictionary of target field:value
+        values = {}  # dictionary of target field -> value
         
         for field in self.fields: # target fields
             value = _get_value(r, field)
@@ -457,35 +516,37 @@ class ExtraDataClassifierSimple(object):
         y_pred = clf.predict(x_test)
 
         #print(f"Unpredicted labels for [{field}]", set(y_test) - set(y_pred))
-        print(f"=========> Accuracy for classfier[{field}]: {100*(self._get_accuracy(y_pred, y_test))}%")
+        print(f"=========> ACCURACY for classfier[{field}]: {100*(self._get_accuracy(y_pred, y_test))}%")
+        print(f"=========> SCORE or classfier[{field}]: {clf.score(x_test, y_test)}%")
         confident = {}
 
         best_f_score, best_threshold = 0.0, None
+        if not isinstance(clf, DecisionTreeClassifier):
+            # Compute precision and recall ourselves
+            for threshold in np.arange(0, 4, 0.2):
+                n_confident = 0
+                n_confident_wrong = 0
+                # clf.decision_function returns the confidence score.
+                # The confidence score for a sample is proportional to the signed distance of that sample to the hyperplane
+                for prediction, actual, confidence in zip(y_pred, y_test, clf.decision_function(x_test)):
+                    # simulate a decision threshold... it's an added layer for the listo application
+                    if np.max(confidence) > threshold:
+                        # If the most probable class has confidence larger than the minimum threshold, it is a confident prediction
+                        n_confident += 1
+                        if prediction != actual:
+                            n_confident_wrong += 1   # confident predictions that are wrong should be minimized! e.g. false positives
 
-        for threshold in np.arange(0, 4, 0.2):
-            n_confident = 0
-            n_confident_wrong = 0
-            # clf.decision_function returns the confidence score.
-            # The confidence score for a sample is proportional to the signed distance of that sample to the hyperplane
-            for prediction, actual, confidence in zip(y_pred, y_test, clf.decision_function(x_test)):
-                # simulate a decision threshold... it's an added layer for the listo application
-                if np.max(confidence) > threshold:
-                    # If the most probable class has confidence larger than the minimum threshold, it is a confident prediction
-                    n_confident += 1
-                    if prediction != actual:
-                        n_confident_wrong += 1   # confident predictions that are wrong should be minimized! e.g. false positives
+                if n_confident > 0:
+                    recall = 100.0 * (n_confident - n_confident_wrong) / len(y_test)
+                    precision = 100.0 * (n_confident - n_confident_wrong) / n_confident
+                    # not sure about this formula...
+                    f_score = (1 + BETA ** 2) * (precision * recall) / ((BETA ** 2) * precision + recall)
 
-            if n_confident > 0:
-                recall = 100.0 * (n_confident - n_confident_wrong) / len(y_test)
-                precision = 100.0 * (n_confident - n_confident_wrong) / n_confident
-                # not sure about this formula...
-                f_score = (1 + BETA ** 2) * (precision * recall) / ((BETA ** 2) * precision + recall)
+                    if f_score > best_f_score:
+                        best_threshold = threshold
+                        best_f_score = f_score
 
-                if f_score > best_f_score:
-                    best_threshold = threshold
-                    best_f_score = f_score
-
-                confident[threshold] = {'recall': recall, 'precision': precision, 'f_score': f_score}
+                    confident[threshold] = {'recall': recall, 'precision': precision, 'f_score': f_score}
         # Precision - measures true positive predictions over positive predictions made (weighted average)
         # Recall - measures true positive predictions over total positive observations (weighted average)
         # f1 - 
@@ -495,27 +556,37 @@ class ExtraDataClassifierSimple(object):
             'precision': metrics.precision_score(y_test, y_pred, average='weighted', pos_label=None),
             'recall':    metrics.recall_score(y_test, y_pred, average='weighted', pos_label=None),
             'f1':        metrics.f1_score(y_test, y_pred, average='weighted', pos_label=None),
-            'confident': confident,
+            'confident': confident if confident else None,
             'confident_best_f_score': best_f_score,
             'confident_best_threshold': best_threshold
         }
 
-    def benchmark(self, field):
+    def benchmark(self, field, clf_name):
         '''
         Perform training and testing on a given field classifier,
         using a 70-30 split, with a temproary classifier and cached data_vectorized
         '''
+        y_all = self.targets[field]
+        if clf_name=='xgb':
+            y_all = pd.Series(np.array(y_all), dtype='category').cat.codes
+                   
         x_train, x_test, y_train, y_test = model_selection.train_test_split(
-            self.data_vectorized[field], np.array(self.targets[field]), test_size=0.3, random_state=0)
+            self.data_vectorized[field], np.array(y_all), test_size=0.3, random_state=0)
 
         # Create a temporary classifier for benchmarking
-        clf = self.create_log_classifier()
-        try:
-            #clf.partial_fit(x_train, y_train, classes=set(y_train))
-            clf.fit(x_train, y_train)
-        except Exception as e:
-            print("X____X   error", e)
-        return self._benchmark(clf, x_test, y_test, field)
+        if clf_name=='xgb':
+            print("XG FOR", field)
+            clf = self.create_xgb_classifier(x_train, y_train, x_test, y_test)
+
+        else:
+            clf = self.create_clf(clf_name, field)
+            try:
+                #clf.partial_fit(x_train, y_train, classes=set(y_train))
+                print("Now training...")
+                clf.fit(x_train, y_train)  
+            except Exception as e:
+                print("\n!!! ERROR", e)
+            return self._benchmark(clf, x_test, y_test, field)
     
 
 
