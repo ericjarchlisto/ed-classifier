@@ -1,9 +1,14 @@
 
-- Add XgBoost, RandomForest, DecisionTree classifiers in the classif.py file
-- this way we ensure that data preparation is the same for all
-- realizar pruebas para poder cargar (y recargar) un modelo
-- usar nuestras propias medidas y usar `score`
-
 PROBAR GUARDADO CON pickle Y joblib
 
 https://machinelearningmastery.com/save-load-machine-learning-models-python-scikit-learn/
+
+https://scikit-learn.org/stable/modules/model_persistence.html
+
+
+SAVE AND LOAD CLASSIFIER MODELS
+- Whose `predict` method do we use?
+- When do we instantiate the Classifier custom class?
+- What should be pickled into a file: the classifier class or only the model itself? (probably only the model)
+- When should the model be loaded upon use?
+- revise the `persist` method in listomx/tasks/

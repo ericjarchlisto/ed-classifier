@@ -50,8 +50,9 @@ class InvoiceRecord(InvoiceRecordForClassification):
 
 
 class PartSelector(BaseEstimator, TransformerMixin):
-    """Clean and transform text from each document for Vectorizing
-        implements fit() and transform() according to sklearn API conventions
+    """
+    Clean and transform text from each document for Vectorizing
+    implements fit() and transform() according to sklearn API conventions
     """
     def __init__(self, part):
         self.part = part
@@ -115,18 +116,21 @@ class PartSelector(BaseEstimator, TransformerMixin):
 
 class ExtraDataClassifierSimple(object):
     '''
-    Customer-agnostic classifier, don't care about workflows or parts; 
-    we only receive the data and predict for two fields: nature and cost center.
-    we do not use 'text' as input anymore.
-    we do not use timestamp from invoices
+    Customer-agnostic classifier, don't worry about workflows or parts; 
+    It only receives the data, predicts for two target fields from extra data: 
+        - nature
+        - cost_center
+    Simple version caveats
+    **we do not use 'text' as input feature anymore.
+    **we do not use timestamp from invoices
 
-    A classifier instance is created on a per-workflow basis (?)
+    A classifier instance is created on a per-workflow basis
     '''
 
-    clfs: Dict[str, SGDClassifier]  # field name -> sklearn SVM Classifier
-    vectorizers: Dict[str, Pipeline]  # field name -> Transformer-Vectorizer object
-    targets: Dict[str, List[str]]   # field name -> [label values]
-    last_modified_on: int  # UTC timestamp, for selecting the data to use for partial fit
+    clfs: Dict[str, SGDClassifier]  # field -> sklearn Classifier
+    vectorizers: Dict[str, Pipeline]  # field -> Transformer-Vectorizer object
+    targets: Dict[str, List[str]]   # field -> [true label values for field]
+    last_modified_on: int  # UTC timestamp, for selecting the data to use for partial fit. shape should be respected for every fit
 
     def __init__(self, clf_factory=None, part='all', updateOnStart=False, vect='hash'):
             # self.logger = logging.getLogger(f'{__package__}.{__name__}.simple-classif')
@@ -146,14 +150,16 @@ class ExtraDataClassifierSimple(object):
                 self.update() # the very first train
             else:
                 print("only vectorize Data...")
-                self.onlyVectorizeData()
+                self.only_vectorize_data()
 
     def prepareDataFrame(self):
-        '''Standardize dataframe columns for Data extraction;
-            cast nature and cost_center into category (int) types'''
+        '''
+        Standardize dataframe columns for Data extraction;
+        cast `nature` and `cost_center` into categorical types
+        '''
         if 'nature' in self.df:
             self.df['nature'] = self.df['nature'].astype('Int64')
-            self.df['nature'] = self.df['nature'].astype('category')            
+            self.df['nature'] = self.df['nature'].astype('category')
 
         else: 
             # self.logger.warning("INIT \tno `nature` in dataframe")
@@ -364,7 +370,7 @@ class ExtraDataClassifierSimple(object):
         if chunk:
             _process_chunk(chunk)
 
-    def onlyVectorizeData(self):
+    def only_vectorize_data(self):
         '''Only populates vectorizer and data_vectorized dicts, 
         avoids training and populating the clfs dict'''
         if not self.fields:
@@ -421,8 +427,7 @@ class ExtraDataClassifierSimple(object):
 
     def update(self):
             """Process next batch of invoices (based on categorization time),
-            re-train the classifier using the whole set
-            how often is this method called?
+            re-train the classifier using the whole dataset
 
             All fields in self.fields are predicted on the same input features defined in InvoiceRecord
             """
@@ -477,6 +482,12 @@ class ExtraDataClassifierSimple(object):
 
             # 4. DONE. We now have classifiers trained for every target field... is the target included??
 
+    def dumpModel(self):
+        pass
+
+    def loadModel(self):
+        pass
+    
     def _top_ranked_features(self, field, x_train, y_train):
         '''
         Returns the sorted list of feature names according to statistical score (chi squared test for non-negative features).
@@ -561,7 +572,7 @@ class ExtraDataClassifierSimple(object):
             'confident_best_threshold': best_threshold
         }
 
-    def benchmark(self, field, clf_name):
+    def benchmark(self, field, clf_name='svm'):
         '''
         Perform training and testing on a given field classifier,
         using a 70-30 split, with a temproary classifier and cached data_vectorized
@@ -577,7 +588,7 @@ class ExtraDataClassifierSimple(object):
         if clf_name=='xgb':
             print("XG FOR", field)
             clf = self.create_xgb_classifier(x_train, y_train, x_test, y_test)
-
+            return None
         else:
             clf = self.create_clf(clf_name, field)
             try:
